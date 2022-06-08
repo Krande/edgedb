@@ -26,6 +26,8 @@ CREATE SCALAR TYPE cal::local_time EXTENDING std::anyscalar;
 
 CREATE SCALAR TYPE cal::relative_duration EXTENDING std::anyscalar;
 
+CREATE SCALAR TYPE cal::date_duration EXTENDING std::anyscalar;
+
 
 ## Functions
 ## ---------
@@ -216,6 +218,56 @@ cal::to_local_time(hour: std::int64, min: std::int64, sec: std::float64)
 
 
 CREATE FUNCTION
+cal::to_relative_duration(
+        NAMED ONLY years: std::int64=0,
+        NAMED ONLY months: std::int64=0,
+        NAMED ONLY days: std::int64=0,
+        NAMED ONLY hours: std::int64=0,
+        NAMED ONLY minutes: std::int64=0,
+        NAMED ONLY seconds: std::float64=0,
+        NAMED ONLY microseconds: std::int64=0
+    ) -> cal::relative_duration
+{
+    CREATE ANNOTATION std::description := 'Create a `cal::relative_duration` value.';
+    SET volatility := 'Immutable';
+    USING SQL $$
+    SELECT (
+        make_interval(
+            "years"::int,
+            "months"::int,
+            0,
+            "days"::int,
+            "hours"::int,
+            "minutes"::int,
+            "seconds"
+        ) +
+        (microseconds::text || ' microseconds')::interval
+    )::edgedb.relative_duration_t
+    $$;
+};
+
+
+CREATE FUNCTION
+cal::to_date_duration(
+        NAMED ONLY years: std::int64=0,
+        NAMED ONLY months: std::int64=0,
+        NAMED ONLY days: std::int64=0
+    ) -> cal::date_duration
+{
+    CREATE ANNOTATION std::description := 'Create a `cal::date_duration` value.';
+    SET volatility := 'Immutable';
+    USING SQL $$
+    SELECT make_interval(
+        "years"::int,
+        "months"::int,
+        0,
+        "days"::int
+    )::edgedb.date_duration_t
+    $$;
+};
+
+
+CREATE FUNCTION
 cal::time_get(dt: cal::local_time, el: std::str) -> std::float64
 {
     CREATE ANNOTATION std::description :=
@@ -253,7 +305,7 @@ cal::date_get(dt: cal::local_date, el: std::str) -> std::float64
     USING SQL $$
     SELECT CASE WHEN "el" IN (
             'century', 'day', 'decade', 'dow', 'doy',
-            'isodow', 'isoyear', 'millenium',
+            'isodow', 'isoyear', 'millennium',
             'month', 'quarter', 'week', 'year')
         THEN date_part("el", "dt")
         ELSE
@@ -266,12 +318,49 @@ cal::date_get(dt: cal::local_date, el: std::str) -> std::float64
                 detail => (
                     '{"hint":"Supported units: century, day, ' ||
                     'decade, dow, doy, isodow, isoyear, ' ||
-                    'millenium, month, quarter, seconds, week, year."}'
+                    'millennium, month, quarter, seconds, week, year."}'
                 )
             )
         END
     $$;
 };
+
+
+CREATE FUNCTION
+cal::normalize_relative_hours(dur: cal::relative_duration)
+  -> cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Convert 24-hour chunks into days.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL FUNCTION 'justify_hours';
+};
+
+
+CREATE FUNCTION
+cal::normalize_relative_days(dur: cal::relative_duration)
+  -> cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Convert 30-day chunks into months.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL FUNCTION 'justify_days';
+};
+
+
+CREATE FUNCTION
+cal::normalize_relative_duration(dur: cal::relative_duration)
+  -> cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Convert 24-hour chunks into days and then 30-day chunks into months.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL FUNCTION 'justify_interval';
+};
+
 
 
 ## Operators on std::datetime
@@ -485,6 +574,16 @@ std::`-` (l: cal::local_datetime, r: cal::relative_duration) -> cal::local_datet
 };
 
 
+CREATE INFIX OPERATOR
+std::`-` (l: cal::local_datetime, r: cal::local_datetime) -> cal::relative_duration {
+    CREATE ANNOTATION std::identifier := 'minus';
+    CREATE ANNOTATION std::description := 'Date/time subtraction.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL OPERATOR r'-(timestamp, timestamp)';
+};
+
+
 ## Operators on cal::local_date
 ## ----------------------------
 
@@ -664,6 +763,19 @@ std::`-` (l: cal::local_date, r: cal::relative_duration) -> cal::local_date
 };
 
 
+CREATE INFIX OPERATOR
+std::`-` (l: cal::local_date, r: cal::local_date) -> cal::date_duration
+{
+    CREATE ANNOTATION std::identifier := 'minus';
+    CREATE ANNOTATION std::description := 'Date subtraction.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL $$
+        SELECT make_interval(0, 0, 0, "l" - "r")::edgedb.date_duration_t
+    $$;
+};
+
+
 ## Operators on cal::local_time
 ## ----------------------------
 
@@ -819,6 +931,16 @@ std::`-` (l: cal::local_time, r: cal::relative_duration) -> cal::local_time {
 };
 
 
+CREATE INFIX OPERATOR
+std::`-` (l: cal::local_time, r: cal::local_time) -> cal::relative_duration {
+    CREATE ANNOTATION std::identifier := 'minus';
+    CREATE ANNOTATION std::description := 'Time subtraction.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    USING SQL OPERATOR r'-(time, time)';
+};
+
+
 ## Operators on cal::relative_duration
 ## ----------------------------
 
@@ -916,7 +1038,7 @@ CREATE INFIX OPERATOR
 std::`+` (l: cal::relative_duration, r: cal::relative_duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'plus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time addition.';
+        'Time interval addition.';
     SET volatility := 'Immutable';
     SET commutator := 'std::+';
     USING SQL $$
@@ -929,7 +1051,7 @@ CREATE INFIX OPERATOR
 std::`-` (l: cal::relative_duration, r: cal::relative_duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'minus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time subtraction.';
+        'Time interval subtraction.';
     SET volatility := 'Immutable';
     USING SQL $$
     SELECT ("l"::interval - "r"::interval)::edgedb.relative_duration_t;
@@ -938,10 +1060,35 @@ std::`-` (l: cal::relative_duration, r: cal::relative_duration) -> cal::relative
 
 
 CREATE INFIX OPERATOR
+std::`+` (l: cal::date_duration, r: cal::date_duration) -> cal::date_duration {
+    CREATE ANNOTATION std::identifier := 'plus';
+    CREATE ANNOTATION std::description :=
+        'Time interval addition.';
+    SET volatility := 'Immutable';
+    SET commutator := 'std::+';
+    USING SQL $$
+    SELECT ("l" + "r")::edgedb.date_duration_t;
+    $$;
+};
+
+
+CREATE INFIX OPERATOR
+std::`-` (l: cal::date_duration, r: cal::date_duration) -> cal::date_duration {
+    CREATE ANNOTATION std::identifier := 'minus';
+    CREATE ANNOTATION std::description :=
+        'Time interval subtraction.';
+    SET volatility := 'Immutable';
+    USING SQL $$
+    SELECT ("l" - "r")::edgedb.date_duration_t;
+    $$;
+};
+
+
+CREATE INFIX OPERATOR
 std::`+` (l: std::duration, r: cal::relative_duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'plus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time addition.';
+        'Time interval addition.';
     SET volatility := 'Immutable';
     SET commutator := 'std::+';
     USING SQL $$
@@ -954,7 +1101,7 @@ CREATE INFIX OPERATOR
 std::`+` (l: cal::relative_duration, r: std::duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'plus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time addition.';
+        'Time interval addition.';
     SET volatility := 'Immutable';
     SET commutator := 'std::+';
     USING SQL $$
@@ -967,7 +1114,7 @@ CREATE INFIX OPERATOR
 std::`-` (l: std::duration, r: cal::relative_duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'minus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time subtraction.';
+        'Time interval subtraction.';
     SET volatility := 'Immutable';
     USING SQL $$
     SELECT ("l"::interval - "r"::interval)::edgedb.relative_duration_t;
@@ -979,7 +1126,7 @@ CREATE INFIX OPERATOR
 std::`-` (l: cal::relative_duration, r: std::duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'minus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time subtraction.';
+        'Time interval subtraction.';
     SET volatility := 'Immutable';
     USING SQL $$
     SELECT ("l"::interval - "r"::interval)::edgedb.relative_duration_t;
@@ -991,7 +1138,7 @@ CREATE PREFIX OPERATOR
 std::`-` (v: cal::relative_duration) -> cal::relative_duration {
     CREATE ANNOTATION std::identifier := 'minus';
     CREATE ANNOTATION std::description :=
-        'Time interval and date/time subtraction.';
+        'Time interval negation.';
     SET volatility := 'Immutable';
     USING SQL $$
     SELECT (-"v"::interval)::edgedb.relative_duration_t;
@@ -1037,11 +1184,18 @@ CREATE CAST FROM std::str TO cal::local_time {
     USING SQL FUNCTION 'edgedb.local_time_in';
 };
 
+
 CREATE CAST FROM std::str TO cal::relative_duration {
     SET volatility := 'Stable';
     USING SQL $$
     SELECT val::edgedb.relative_duration_t;
     $$;
+};
+
+
+CREATE CAST FROM std::str TO cal::date_duration {
+    SET volatility := 'Stable';
+    USING SQL FUNCTION 'edgedb.date_duration_in';
 };
 
 
@@ -1070,6 +1224,12 @@ CREATE CAST FROM cal::relative_duration TO std::str {
 };
 
 
+CREATE CAST FROM cal::date_duration TO std::str {
+    SET volatility := 'Immutable';
+    USING SQL CAST;
+};
+
+
 CREATE CAST FROM cal::local_datetime TO std::json {
     SET volatility := 'Stable';
     USING SQL FUNCTION 'to_jsonb';
@@ -1089,6 +1249,12 @@ CREATE CAST FROM cal::local_time TO std::json {
 
 
 CREATE CAST FROM cal::relative_duration TO std::json {
+    SET volatility := 'Stable';
+    USING SQL FUNCTION 'to_jsonb';
+};
+
+
+CREATE CAST FROM cal::date_duration TO std::json {
     SET volatility := 'Stable';
     USING SQL FUNCTION 'to_jsonb';
 };
@@ -1127,6 +1293,14 @@ CREATE CAST FROM std::json TO cal::relative_duration {
 };
 
 
+CREATE CAST FROM std::json TO cal::date_duration {
+    SET volatility := 'Stable';
+    USING SQL $$
+    SELECT edgedb.date_duration_in(edgedb.jsonb_extract_scalar(val, 'string'));
+    $$;
+};
+
+
 CREATE CAST FROM std::duration TO cal::relative_duration {
     SET volatility := 'Stable';
     USING SQL CAST;
@@ -1134,6 +1308,19 @@ CREATE CAST FROM std::duration TO cal::relative_duration {
 
 
 CREATE CAST FROM cal::relative_duration TO std::duration {
+    SET volatility := 'Stable';
+    USING SQL CAST;
+};
+
+
+CREATE CAST FROM cal::date_duration TO cal::relative_duration {
+    SET volatility := 'Stable';
+    USING SQL CAST;
+    ALLOW IMPLICIT;
+};
+
+
+CREATE CAST FROM cal::relative_duration TO cal::date_duration {
     SET volatility := 'Stable';
     USING SQL CAST;
 };
@@ -1151,7 +1338,7 @@ std::datetime_get(dt: cal::local_datetime, el: std::str) -> std::float64
     USING SQL $$
     SELECT CASE WHEN "el" IN (
             'century', 'day', 'decade', 'dow', 'doy', 'hour',
-            'isodow', 'isoyear', 'microseconds', 'millenium',
+            'isodow', 'isoyear', 'microseconds', 'millennium',
             'milliseconds', 'minutes', 'month', 'quarter',
             'seconds', 'week', 'year')
         THEN date_part("el", "dt")
@@ -1168,8 +1355,143 @@ std::datetime_get(dt: cal::local_datetime, el: std::str) -> std::float64
                 detail => (
                     '{"hint":"Supported units: epochseconds, century, '
                     || 'day, decade, dow, doy, hour, isodow, isoyear, '
-                    || 'microseconds, millenium, milliseconds, minutes, '
+                    || 'microseconds, millennium, milliseconds, minutes, '
                     || 'month, quarter, seconds, week, year."}'
+                )
+            )
+        END
+    $$;
+};
+
+
+CREATE FUNCTION
+std::duration_get(dt: cal::date_duration, el: std::str) -> std::float64
+{
+    CREATE ANNOTATION std::description :=
+        'Extract a specific element of input duration by name.';
+    SET volatility := 'Stable';
+    USING SQL $$
+    SELECT CASE WHEN "el" IN (
+            'millennium', 'century', 'decade', 'year', 'quarter', 'month',
+            'day')
+        THEN date_part("el", "dt")
+        WHEN "el" = 'totalseconds'
+        THEN date_part('epoch', "dt")
+        ELSE
+            edgedb.raise(
+                NULL::float,
+                'invalid_datetime_format',
+                msg => (
+                    'invalid unit for std::duration_get: '
+                    || quote_literal("el")
+                ),
+                detail => (
+                    '{"hint":"Supported units: '
+                    || 'millennium, century, decade, year, quarter, month, day, '
+                    || 'hour, and totalseconds."}'
+                )
+            )
+        END
+    $$;
+};
+
+
+CREATE FUNCTION
+std::duration_get(dt: cal::relative_duration, el: std::str) -> std::float64
+{
+    CREATE ANNOTATION std::description :=
+        'Extract a specific element of input duration by name.';
+    SET volatility := 'Stable';
+    USING SQL $$
+    SELECT CASE WHEN "el" IN (
+            'millennium', 'century', 'decade', 'year', 'quarter', 'month',
+            'day', 'hour', 'minutes', 'seconds', 'milliseconds',
+            'microseconds')
+        THEN date_part("el", "dt")
+        WHEN "el" = 'totalseconds'
+        THEN date_part('epoch', "dt")
+        ELSE
+            edgedb.raise(
+                NULL::float,
+                'invalid_datetime_format',
+                msg => (
+                    'invalid unit for std::duration_get: '
+                    || quote_literal("el")
+                ),
+                detail => (
+                    '{"hint":"Supported units: '
+                    || 'millennium, century, decade, year, quarter, month, day, '
+                    || 'hour, minutes, seconds, milliseconds, microseconds, '
+                    || 'and totalseconds."}'
+                )
+            )
+        END
+    $$;
+};
+
+
+CREATE FUNCTION
+std::duration_truncate(
+    dt: cal::date_duration,
+    unit: std::str
+) -> cal::date_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Truncate the input duration to a particular precision.';
+    SET volatility := 'Immutable';
+    USING SQL $$
+    SELECT CASE WHEN "unit" IN (
+            'days', 'weeks', 'months', 'years', 'decades', 'centuries')
+        THEN date_trunc("unit", "dt")::edgedb.relative_duration_t
+        WHEN "unit" = 'quarters'
+        THEN date_trunc('quarter', "dt")::edgedb.relative_duration_t
+        ELSE
+            edgedb.raise(
+                NULL::edgedb.relative_duration_t,
+                'invalid_datetime_format',
+                msg => (
+                    'invalid unit for std::duration_truncate: '
+                    || quote_literal("unit")
+                ),
+                detail => (
+                    '{"hint":"Supported units: days, weeks, months, '
+                    || 'quarters, years, decades, centuries."}'
+                )
+            )
+        END
+    $$;
+};
+
+
+CREATE FUNCTION
+std::duration_truncate(
+    dt: cal::relative_duration,
+    unit: std::str
+) -> cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Truncate the input duration to a particular precision.';
+    SET volatility := 'Immutable';
+    USING SQL $$
+    SELECT CASE WHEN "unit" IN (
+            'microseconds', 'milliseconds', 'seconds',
+            'minutes', 'hours', 'days', 'weeks', 'months',
+            'years', 'decades', 'centuries')
+        THEN date_trunc("unit", "dt")::edgedb.relative_duration_t
+        WHEN "unit" = 'quarters'
+        THEN date_trunc('quarter', "dt")::edgedb.relative_duration_t
+        ELSE
+            edgedb.raise(
+                NULL::edgedb.relative_duration_t,
+                'invalid_datetime_format',
+                msg => (
+                    'invalid unit for std::duration_truncate: '
+                    || quote_literal("unit")
+                ),
+                detail => (
+                    '{"hint":"Supported units: microseconds, milliseconds, '
+                    || 'seconds, minutes, hours, days, weeks, months, '
+                    || 'quarters, years, decades, centuries."}'
                 )
             )
         END
@@ -1312,36 +1634,6 @@ std::to_datetime(local: cal::local_datetime, zone: std::str)
 
 
 CREATE FUNCTION
-cal::to_relative_duration(
-        NAMED ONLY years: std::int64=0,
-        NAMED ONLY months: std::int64=0,
-        NAMED ONLY days: std::int64=0,
-        NAMED ONLY hours: std::int64=0,
-        NAMED ONLY minutes: std::int64=0,
-        NAMED ONLY seconds: std::float64=0,
-        NAMED ONLY microseconds: std::int64=0
-    ) -> cal::relative_duration
-{
-    CREATE ANNOTATION std::description := 'Create a `cal::relative_duration` value.';
-    SET volatility := 'Immutable';
-    USING SQL $$
-    SELECT (
-        make_interval(
-            "years"::int,
-            "months"::int,
-            0,
-            "days"::int,
-            "hours"::int,
-            "minutes"::int,
-            "seconds"
-        ) +
-        (microseconds::text || ' microseconds')::interval
-    )::edgedb.relative_duration_t
-    $$;
-};
-
-
-CREATE FUNCTION
 std::min(vals: SET OF cal::local_datetime) -> OPTIONAL cal::local_datetime
 {
     CREATE ANNOTATION std::description :=
@@ -1367,6 +1659,30 @@ std::min(vals: SET OF cal::local_date) -> OPTIONAL cal::local_date
 
 CREATE FUNCTION
 std::min(vals: SET OF cal::local_time) -> OPTIONAL cal::local_time
+{
+    CREATE ANNOTATION std::description :=
+        'Return the smallest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'min';
+};
+
+
+CREATE FUNCTION
+std::min(vals: SET OF cal::relative_duration) -> OPTIONAL cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Return the smallest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'min';
+};
+
+
+CREATE FUNCTION
+std::min(vals: SET OF cal::date_duration) -> OPTIONAL cal::date_duration
 {
     CREATE ANNOTATION std::description :=
         'Return the smallest value of the input set.';
@@ -1426,6 +1742,18 @@ std::min(vals: SET OF array<cal::relative_duration>) -> OPTIONAL array<cal::rela
 
 
 CREATE FUNCTION
+std::min(vals: SET OF array<cal::date_duration>) -> OPTIONAL array<cal::date_duration>
+{
+    CREATE ANNOTATION std::description :=
+        'Return the smallest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'min';
+};
+
+
+CREATE FUNCTION
 std::max(vals: SET OF cal::local_datetime) -> OPTIONAL cal::local_datetime
 {
     CREATE ANNOTATION std::description :=
@@ -1454,6 +1782,30 @@ std::max(vals: SET OF cal::local_time) -> OPTIONAL cal::local_time
 {
     CREATE ANNOTATION std::description :=
         'Return the smallest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'max';
+};
+
+
+CREATE FUNCTION
+std::max(vals: SET OF cal::relative_duration) -> OPTIONAL cal::relative_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Return the greatest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'max';
+};
+
+
+CREATE FUNCTION
+std::max(vals: SET OF cal::date_duration) -> OPTIONAL cal::date_duration
+{
+    CREATE ANNOTATION std::description :=
+        'Return the greatest value of the input set.';
     SET volatility := 'Immutable';
     SET force_return_cast := true;
     SET preserves_optionality := true;
@@ -1499,6 +1851,18 @@ std::max(vals: SET OF array<cal::local_time>) -> OPTIONAL array<cal::local_time>
 
 CREATE FUNCTION
 std::max(vals: SET OF array<cal::relative_duration>) -> OPTIONAL array<cal::relative_duration>
+{
+    CREATE ANNOTATION std::description :=
+        'Return the smallest value of the input set.';
+    SET volatility := 'Immutable';
+    SET force_return_cast := true;
+    SET preserves_optionality := true;
+    USING SQL FUNCTION 'max';
+};
+
+
+CREATE FUNCTION
+std::max(vals: SET OF array<cal::date_duration>) -> OPTIONAL array<cal::date_duration>
 {
     CREATE ANNOTATION std::description :=
         'Return the smallest value of the input set.';
