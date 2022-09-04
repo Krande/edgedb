@@ -5,3 +5,4 @@ dependencies:
   - git
   - rust==1.63
   - clang
+  - python-devtools
