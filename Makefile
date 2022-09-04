@@ -5,6 +5,9 @@ SPHINXOPTS:="-W -n"
 
 BUILD_REQS_SCRIPT='print("\x00".join(__import__("build").ProjectBuilder(".").build_system_requires))'
 
+build-condaenv:
+	conda env update --file environment.yml --prune
+
 build-reqs:
 	python -m pip install --no-build-isolation build
 	python -c $(BUILD_REQS_SCRIPT) | xargs -0 python -m pip install --no-build-isolation

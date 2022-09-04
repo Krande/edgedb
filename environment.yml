@@ -1,0 +1,7 @@
+name: edgedb-dev
+channels:
+  - conda-forge
+dependencies:
+  - git
+  - rust==1.63
+  - gcc
